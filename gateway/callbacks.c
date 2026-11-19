@@ -53,7 +53,8 @@ gboolean callback_query_timeout(gpointer data);
 \*****************************************/
 
 // Create a Query descriptor and put it in qlist; starts the timer
-Query *new_Query(const char *filename, uint32_t seq, gboolean is_ipv6, struct in6_addr *ipv6, struct in_addr *ipv4, u_short port) {
+Query *new_Query(const char *filename, uint32_t seq, gboolean is_ipv6, struct in6_addr *ipv6, struct in_addr *ipv4,
+		u_short port, QueryState state, char *query_buf, int query_len) {
 	// Add the additional parameters to store the IPv6/IPv4 and port numbers of the
 	// Query sender, to later forward the Hit message to this address.
 	Query *pt;
@@ -63,9 +64,11 @@ Query *new_Query(const char *filename, uint32_t seq, gboolean is_ipv6, struct in
 	pt->seq = seq;
 	pt->thread = NULL;
     // ** TASK 2.1 **
-	// pt->state = ...
+	pt->state = QUERY_STATE_WAITING_JITTER;
 	pt->is_ipv6 = is_ipv6;
 	pt->timer_id= 0;
+	pt->query_len = query_len;
+	pt->query_buf = query_buf;
 	// Define the query Id - for logging purposes
 	sprintf(pt->qname, "'%s'(%d)%s", filename, seq, is_ipv6 ? "v6" : "v4");
 	// ** TASK 1.2 **
@@ -139,7 +142,8 @@ void free_query_in_Querylist(Query *q, gboolean called_from_GUI) {
 
     // ** TASK 2.2 **
 	// Stop timer if it is active
-	// ...
+	stop_query_timer(q);
+
 
 	q->self_ = NULL;	// It is being freed
 
@@ -230,9 +234,43 @@ gboolean callback_query_timeout(gpointer data) {
 	// If you are waiting for a connection, cancel the pending Query
 
 	// Otherwise, it is a mistake
+	q->timer_id = 0;
+	switch (q->state) {
 
-	q->timer_id= 0;
-	return FALSE;  // stop timer
+	        case QUERY_STATE_WAITING_JITTER:
+
+	            // Forward QUERY to the opposite domain
+	            if (send_multicast(q->query_buf, q->query_len,
+	                               !q->is_ipv6)) {
+	                q->state = QUERY_STATE_WAITING_HIT;
+	                start_query_timer(q, QUERY_TIMEOUT);
+	            } else {
+	                Log("Error forwarding QUERY after jitter\n");
+	            }
+	            break;
+
+	        case QUERY_STATE_WAITING_HIT:
+
+	            // No HIT received: remove pending query
+	            free_query_in_Querylist(q, FALSE);
+	            break;
+
+	        case QUERY_STATE_HIT_RECEIVED:
+
+	            // HIT display timeout: remove query
+	            free_query_in_Querylist(q, FALSE);
+	            break;
+
+	        case QUERY_STATE_WAITING_CONNECTION:
+
+	            // Implemented in Phase 3
+	            free_query_in_Querylist(q, FALSE);
+	            break;
+
+	        default:
+	            Log("Unexpected query state in callback_query_timeout\n");
+	            break;
+	    }
 
 	return FALSE;  // stop timer
 }
@@ -284,15 +322,15 @@ void handle_Query(char *buf, int buflen, gboolean is_ipv6,
 	}
 
 	// 3. Criar uma nova Query e guardar o emissor
-	Query *pt = new_Query(fname, seq, is_ipv6, ipv6, ipv4, port);
-
-	// 4. Adicionar à GUI
-	GUI_add_Query(fname, seq, is_ipv6, strdup(tmp_ip), port);
-
-	// 5. Encaminhar para o domínio oposto
-	send_multicast(buf, buflen, !is_ipv6);
+	Query *pt = new_Query(fname, seq, is_ipv6, ipv6, ipv4, port, QUERY_STATE_WAITING_JITTER, buf, buflen);
 
 	// ** TASK 2.2 + 2.4 ** - updated version with timer support
+
+	// 4. Encaminhar para o domínio oposto
+	long int jitter_time = (long) floor(
+	    1.0 * random() / RAND_MAX * QUERY_JITTER
+	);
+	start_query_timer(pt, jitter_time);
 
 	// Check if it is a new query (equal name+seq+is_ipv6) searching the Query list - ignore the query if it is an old one
 	// ... Use the Querylist
@@ -310,7 +348,7 @@ void handle_Query(char *buf, int buflen, gboolean is_ipv6,
 	GUI_add_Query(fname, seq, is_ipv6, strdup(tmp_ip), port);
 
 	// (TASK x) Start by forwarding the Query message to the other domain (i.e. !is_ipv6) using:
-	// ... send_multicast(buf, buflen, !is_ipv6);
+	//send_multicast(buf, buflen, !is_ipv6);
 	//
 	// At TASK x, if you have time, replace with starting a jitter timer, which will send the Query later!
 	//	This helps when there are more than one gateway is connecting two multicast groups!
@@ -365,71 +403,56 @@ void handle_Hit(char *buf, int buflen, struct in6_addr *ip, u_short port,
 	sprintf(tmp_buf, "%s-%hu", addr_ipv6(ip), sTCP_port);
 	GUI_add_hit_to_Query(fname, seq, !is_ipv6, tmp_buf);
 
-	if (TRUE/* HIT comes from IPv4 fileexchange == QUERY came from IPv6 */) {
+	if (!is_ipv6) {
 		/***********************************************/
 		/**** HIT received from an IPv4 fileexchange ***/
 		/***********************************************/
 
-		// ** TASK 1.3 ** - Initial implementation
+		/* TASK 1.3: HIT received from IPv4 */
+
+		// Convert the IPv4 server address to IPv4-mapped IPv6
 		struct in6_addr mapped_ip;
 
 		memset(&mapped_ip, 0, sizeof(mapped_ip));
 
+		mapped_ip.s6_addr[10] = 0xff;
+		mapped_ip.s6_addr[11] = 0xff;
 
-		/* TASK 1.3: HIT received from IPv4 */
+		memcpy(&mapped_ip.s6_addr[12],
+			   &srvIP4, sizeof(srvIP4));
 
-		/* Only process HITs coming from IPv4 in this phase */
+		// Build the translated HIT message
+		if (!write_hit_message(
+				hbuf, &hlen, seq, fname,
+				flen, fhash, sTCP_port,
+				TRUE, &mapped_ip, NULL)) {
 
-		if (!is_ipv6) {
-
-		    // Find the original QUERY from IPv6
-		    Query *q = locate_qid_in_Querylist_by_IPv(
-		        fname, seq, TRUE
-		    );
-
-		    if (q == NULL) {
-		        Log("HIT does not match any pending QUERY\n");
-		        return;
-		    }
-
-		    // Convert the IPv4 server address to IPv4-mapped IPv6
-		    struct in6_addr mapped_ip;
-
-		    memset(&mapped_ip, 0, sizeof(mapped_ip));
-
-		    mapped_ip.s6_addr[10] = 0xff;
-		    mapped_ip.s6_addr[11] = 0xff;
-
-		    memcpy(&mapped_ip.s6_addr[12],
-		           &srvIP4, sizeof(srvIP4));
-
-		    // Update HIT information in the Query
-		    update_HIT_info(q, flen, fhash);
-
-		    // Build the translated HIT message
-		    if (!write_hit_message(
-		            hbuf, &hlen, seq, fname,
-		            flen, fhash, sTCP_port,
-		            TRUE, &mapped_ip, NULL)) {
-
-		        Log("Error creating translated HIT\n");
-		        return;
-		    }
-
-		    // Forward HIT to the original IPv6 client
-		    if (!send_M6reply(&q->ipv6, q->port, hbuf, hlen)) {
-		        Log("Error forwarding HIT to IPv6 client\n");
-		        return;
-		    }
-
-		    sprintf(tmp_buf,
-		        "Forwarded HIT '%s' to [%s]:%hu\n",
-		        fname, addr_ipv6(&q->ipv6), q->port);
-
-		    Log(tmp_buf);
-
-		    return;
+			Log("Error creating translated HIT\n");
+			return;
 		}
+
+		// Forward HIT to the original IPv6 client
+		if (!send_M6reply(&q->ipv6, q->port, hbuf, hlen)) {
+			Log("Error forwarding HIT to IPv6 client\n");
+			return;
+		}
+
+		sprintf(tmp_buf,
+			"Forwarded HIT '%s' to [%s]:%hu\n",
+			fname, addr_ipv6(&q->ipv6), q->port);
+
+		Log(tmp_buf);
+
+		// Update Query state and keep HIT visible for 10 seconds
+		stop_query_timer(q);
+		q->state = QUERY_STATE_HIT_RECEIVED;
+		start_query_timer(q, QUERY_TIMEOUT);
+
+		// Update HIT information in the Query
+		update_HIT_info(q, flen, fhash);
+
+		return;
+
 
 
 		// ** TASK 2.3 ** - updated version with timer support

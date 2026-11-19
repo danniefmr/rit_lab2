@@ -41,7 +41,12 @@ struct Query;
 
 
 // ** TASK 2.1 **
-// typedef enum { ... list of states ... } QueryState;
+typedef enum {
+    QUERY_STATE_WAITING_JITTER,
+    QUERY_STATE_WAITING_HIT,
+    QUERY_STATE_HIT_RECEIVED,
+    QUERY_STATE_WAITING_CONNECTION
+} QueryState;
 // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 // Query information
@@ -62,8 +67,10 @@ typedef struct Query {
 
   // State information
     // ** TASK 2.1 **
-    // QueryState 		state;		// Query state
+    QueryState 		state;		// Query state
     thread_state   *thread;
+    char *query_buf;
+    int query_len;
 
     // Add any additional field you want!
     // modify the constructor function (new_Query)!
@@ -89,7 +96,8 @@ extern WindowElements *main_window;
 
 // Create a Query descriptor and put it in qlist - add parameters to store the QUERY's IP and port number
 // ** TASK 1.2 **
-Query *new_Query(const char *filename, uint32_t seq, gboolean is_ipv6, struct in6_addr *ipv6, struct in_addr *ipv4, u_short port);
+Query *new_Query(const char *filename, uint32_t seq, gboolean is_ipv6, struct in6_addr *ipv6, struct in_addr *ipv4,
+		u_short port, QueryState state, char *query_buf, int query_len);
 // Search for Query descriptor in qlist
 Query *locate_qid_in_Querylist(const char *filename, uint32_t seq);
 Query *locate_qid_in_Querylist_by_IPv(const char *filename, uint32_t seq, gboolean is_ipv6);
